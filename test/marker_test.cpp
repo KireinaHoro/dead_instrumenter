@@ -29,6 +29,89 @@ TEST_CASE("BranchInstrumenter if-else compound", "[dcei][if]") {
     REQUIRE(formatCode(ExpectedCode) == runBranchInstrumenterOnCode(Code));
 }
 
+TEST_CASE("BranchInstrumenter if with return macro 1", "[dcei][if]") {
+    auto Code = R"code(#define R return
+
+    int foo(int a){
+        if (a > 0)
+            R 0;
+        return a;
+    }
+    )code";
+    auto ExpectedCode = R"code(void DCEMarker0_(void);
+    void DCEMarker1_(void);
+    #define R return
+
+    int foo(int a){
+        if (a > 0){
+        DCEMarker0_();
+        R 0;
+        } 
+        DCEMarker1_();
+        return a;
+    }
+    )code";
+
+    CAPTURE(Code);
+    REQUIRE(formatCode(ExpectedCode) == runBranchInstrumenterOnCode(Code));
+}
+
+TEST_CASE("BranchInstrumenter if with return macro 2", "[dcei][if]") {
+    auto Code = R"code(#define R return 0;
+
+    int foo(int a){
+        if (a > 0)
+            R
+        return a;
+    }
+    )code";
+    auto ExpectedCode = R"code(void DCEMarker0_(void);
+    void DCEMarker1_(void);
+    #define R return 0;
+
+    int foo(int a){
+        if (a > 0){
+        DCEMarker0_();
+        R
+        } 
+        DCEMarker1_();
+        return a;
+    }
+    )code";
+
+    CAPTURE(Code);
+    REQUIRE(formatCode(ExpectedCode) == runBranchInstrumenterOnCode(Code));
+}
+
+TEST_CASE("BranchInstrumenter if-compound with return macro", "[dcei][if]") {
+    auto Code = R"code(#define R return 0;
+
+    int foo(int a){
+        if (a > 0){
+            R
+        }
+        return a;
+    }
+    )code";
+    auto ExpectedCode = R"code(void DCEMarker0_(void);
+    void DCEMarker1_(void);
+    #define R return 0;
+
+    int foo(int a){
+        if (a > 0){
+        DCEMarker0_();
+        R
+        } 
+        DCEMarker1_();
+        return a;
+    }
+    )code";
+
+    CAPTURE(Code);
+    REQUIRE(formatCode(ExpectedCode) == runBranchInstrumenterOnCode(Code));
+}
+
+
 TEST_CASE("BranchInstrumenter if-else non-compound", "[dcei][if]") {
     auto Code = R"code(int foo(int a){
         if (a > 0)
@@ -57,10 +140,11 @@ TEST_CASE("BranchInstrumenter if-else non-compound", "[dcei][if]") {
 }
 
 TEST_CASE("BranchInstrumenter nested if", "[dcei][if][nested]") {
-    auto Code = R"code(int foo(int a){
+    auto Code = R"code(#define A a = 1;
+    int foo(int a){
         if (a > 0){
             if (a==1) {
-                a = 1;
+                A
             }
             else 
                 a = 2;
@@ -72,12 +156,13 @@ TEST_CASE("BranchInstrumenter nested if", "[dcei][if][nested]") {
     auto ExpectedCode = R"code(void DCEMarker0_(void);
     void DCEMarker1_(void);
     void DCEMarker2_(void);
+    #define A a = 1;
     int foo(int a){
         if (a > 0){
             DCEMarker0_();
             if (a==1) {
                 DCEMarker2_();
-                a = 1;
+                A
             }
             else {
                 DCEMarker1_();

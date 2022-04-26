@@ -1,11 +1,13 @@
 #include "DeadInstrumenter.hpp"
 
+#include "clang/Tooling/Transformer/SourceCode.h"
 #include <clang/AST/Decl.h>
 #include <clang/AST/Stmt.h>
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/ASTMatchers/ASTMatchersMacros.h>
 #include <clang/Lex/Lexer.h>
+#include <clang/Sema/Ownership.h>
 #include <clang/Tooling/Core/Replacement.h>
 #include <clang/Tooling/Transformer/MatchConsumer.h>
 #include <clang/Tooling/Transformer/RewriteRule.h>
@@ -26,8 +28,10 @@ namespace dead {
 
 void detail::RuleActionCallback::run(
     const clang::ast_matchers::MatchFinder::MatchResult &Result) {
-    if (Result.Context->getDiagnostics().hasErrorOccurred())
+    if (Result.Context->getDiagnostics().hasErrorOccurred()) {
+        llvm::errs() << "An error has occured.\n";
         return;
+    }
     Expected<SmallVector<transformer::Edit, 1>> Edits =
         findSelectedCase(Result, Rule).Edits(Result);
     if (!Edits) {
@@ -158,33 +162,54 @@ ASTEdit addMarkerDecl(std::string ID) {
                        std::make_unique<MarkerDeclGenerator>());
 }
 
+RangeSelector statementWithMacrosExpanded(std::string ID) {
+    return [ID](const clang::ast_matchers::MatchFinder::MatchResult &Result)
+               -> Expected<CharSourceRange> {
+        Expected<DynTypedNode> Node = getNode(Result.Nodes, ID);
+        if (!Node) {
+            llvm::outs() << "ERROR";
+            return Node.takeError();
+        }
+        const auto &SM = *Result.SourceManager;
+        auto Range = SM.getExpansionRange(tooling::getExtendedRange(
+            *Node, tok::TokenKind::semi, *Result.Context));
+        return Range;
+    };
+}
+
 auto InstrumentCStmtActions = {
     insertBefore(statements("stmts"), std::make_shared<MarkerCallGenerator>()),
     addMarkerDecl("stmts")};
 
 auto InstrumentReturnAction = {
-    insertAfter(statement("stmt_with_return_descendant"),
+    insertAfter(statementWithMacrosExpanded("stmt_with_return_descendant"),
                 std::make_shared<MarkerCallGenerator>()),
     addMarkerDecl("stmt_with_return_descendant")};
 
-auto curlyBraceAction = {insertBefore(statement("stmt"), cat("{")),
-                         insertAfter(statement("stmt"), cat("}"))};
+auto curlyBraceAction = {
+    insertBefore(statementWithMacrosExpanded("stmt"), cat("{")),
+    insertAfter(statementWithMacrosExpanded("stmt"), cat("}"))};
 
 auto curlyBraceAndInstrumentAction = {
-    insertBefore(statement("stmt"),
+    insertBefore(statementWithMacrosExpanded("stmt"),
                  cat("{", std::make_shared<MarkerCallGenerator>())),
-    insertAfter(statement("stmt"), cat("}")), addMarkerDecl("stmt")};
+    insertAfter(statementWithMacrosExpanded("stmt"), cat("}")),
+    addMarkerDecl("outerstmt")};
 
+// XXX: Create matcher that checks if the outer stmt is in macro and use it to
+// ignore these
 auto canonicalizeIfThenRule(bool AlsoInstrument) {
     return makeRule(ifStmt(isExpansionInMainFile(),
-                           hasThen(stmt(unless(compoundStmt())).bind("stmt"))),
+                           hasThen(stmt(unless(compoundStmt())).bind("stmt")))
+                        .bind("outerstmt"),
                     AlsoInstrument ? curlyBraceAndInstrumentAction
                                    : curlyBraceAction);
 }
 
 auto canonicalizeIfElseRule(bool AlsoInstrument) {
     return makeRule(ifStmt(isExpansionInMainFile(),
-                           hasElse(stmt(unless(compoundStmt())).bind("stmt"))),
+                           hasElse(stmt(unless(compoundStmt())).bind("stmt")))
+                        .bind("outerstmt"),
                     AlsoInstrument ? curlyBraceAndInstrumentAction
                                    : curlyBraceAction);
 }
@@ -192,7 +217,8 @@ auto canonicalizeLoopRule(bool AlsoInstrument) {
     return makeRule(
         mapAnyOf(forStmt, whileStmt, doStmt, cxxForRangeStmt)
             .with(isExpansionInMainFile(),
-                  hasBody(stmt(unless(compoundStmt())).bind("stmt"))),
+                  hasBody(stmt(unless(compoundStmt())).bind("stmt")))
+            .bind("outerstmt"),
         AlsoInstrument ? curlyBraceAndInstrumentAction : curlyBraceAction);
 }
 
@@ -200,11 +226,13 @@ auto canonicalizeSwitchRule(bool AlsoInstrument) {
     auto Unless = unless(anyOf(compoundStmt(), caseStmt(), defaultStmt()));
     return applyFirst(
         {makeRule(caseStmt(isExpansionInMainFile(),
-                           isCaseSubStmt(stmt(Unless).bind("stmt"))),
+                           isCaseSubStmt(stmt(Unless).bind("stmt")))
+                      .bind("outerstmt"),
                   AlsoInstrument ? curlyBraceAndInstrumentAction
                                  : curlyBraceAction),
          makeRule(defaultStmt(isExpansionInMainFile(),
-                              isDefaultSubStmt(stmt(Unless).bind("stmt"))),
+                              isDefaultSubStmt(stmt(Unless).bind("stmt")))
+                      .bind("outerstmt"),
                   AlsoInstrument ? curlyBraceAndInstrumentAction
                                  : curlyBraceAction)});
 }
