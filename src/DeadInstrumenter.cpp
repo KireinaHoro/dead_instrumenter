@@ -117,9 +117,9 @@ class MarkerDeclGenerator : public MatchComputation<std::string> {
     MarkerDeclGenerator() = default;
     llvm::Error eval(const ast_matchers::MatchFinder::MatchResult &,
                      std::string *Result) const override {
-        Result->append("void DCEMarker");
+        Result->append("#ifdef __cplusplus\nextern \"C\" {\n#endif\nvoid DCEMarker");
         Result->append(std::to_string(MarkerDeclCount++));
-        Result->append("_(void);\n");
+        Result->append("_(void);\n#ifdef __cplusplus\n}\n#endif\n");
         return llvm::Error::success();
     }
 
